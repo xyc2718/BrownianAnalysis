@@ -17,7 +17,7 @@ The GUI part is based on PyQt, and particle tracking and diffusion calculations 
 
 # Import the necessary library
 import trackpy as tp
-
+from scipy.optimize import curve_fit
 import sys
 import cv2
 import trackpy as tp
@@ -34,8 +34,25 @@ from matplotlib.figure import Figure
 from concurrent.futures import ThreadPoolExecutor, Future
 
 
-LOGLEVEL="DEBUGGER"
+LOGLEVEL="INFO"
 GlobalTrajectory=None
+GlobalFrameSource=None
+
+def imagej2tpy(data):
+    data.rename(columns={'TRACK_ID':"particle" }, inplace=True)
+    data.rename(columns={'FRAME':"frame" }, inplace=True)
+    data.rename(columns={'POSITION_X':"x" }, inplace=True)
+    data.rename(columns={'POSITION_Y':"y" }, inplace=True)
+    data=data.drop([0,1,2])
+    data["frame"]=data["frame"].astype(float)
+    data["x"]=data["x"].astype(float)
+    data["y"]=data["y"].astype(float)
+    data["particle"]=data["particle"].astype(float)
+    #更改列名称及数据类型
+    data=data.sort_values(by='frame')
+    #按帧序号排列
+    return data
+
 
 # 自定义日志处理器，用于将日志信息传递到弹窗
 class QtLogHandler(logging.Handler, QObject):
@@ -143,7 +160,7 @@ class TrajectoryTab(QWidget):
         # 参数输入
         form_layout = QFormLayout()
         self.diameter_input = QLineEdit("30")
-        self.invert_input = QCheckBox("Invert")
+        self.invert_input = QCheckBox("")
         self.minmass_input = QLineEdit("10")
         self.separation_input = QLineEdit("30")
         self.diameter_input.textChanged.connect(self.defaut_trackvalue)
@@ -306,7 +323,10 @@ class TrajectoryTab(QWidget):
             # 关闭进度条
             progress_dialog.close()
             self.file_path=image_path
-            self.img_label.setText("Selected file: " + self.file_path[-10:-1:])
+            bg=max(-10,-len(imagefolder))
+            self.img_label.setText("Selected file: " + self.file_path[bg:-1:])
+            global GlobalFrameSource
+            GlobalFrameSource=self.file_path[bg:-1:]
             # 如果成功加载图片，更新 framelist
             self.framelist = np.array(image_sequence)
             self.log_message(f"Loaded image sequence from: {imagefolder}", "INFO")
@@ -328,62 +348,69 @@ class TrajectoryTab(QWidget):
         if not self.file_path:
             return  # 如果用户取消了文件选择，直接返回
         frames = []
-        video = cv2.VideoCapture(self.file_path)
+        try:
+            video = cv2.VideoCapture(self.file_path)
 
-        # 确保视频文件成功打开
-        if not video.isOpened():
-            self.log_message(f"Failed to load video file: {self.file_path}", "INFO")
+            # 确保视频文件成功打开
+            if not video.isOpened():
+                self.log_message(f"Failed to load video file: {self.file_path}", "INFO")
+                self.framelist = np.array([])
+                return
+
+            # 获取视频总帧数和帧率
+            total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = video.get(cv2.CAP_PROP_FPS)
+
+            # 初始化进度条
+            progress_dialog = QProgressDialog("Loading video...", "Cancel", 0, total_frames, self)
+            progress_dialog.setWindowTitle("Loading Progress")
+            progress_dialog.setWindowModality(Qt.WindowModal)
+            progress_dialog.show()
+
+            frame_count = 1  # 从1开始计数
+            while True:
+                # 检查是否取消
+                if progress_dialog.wasCanceled():
+                    self.log_message("Video loading canceled by the user.", "INFO")
+                    break
+
+                # 读取当前帧
+                ret, frame = video.read()
+                if not ret or frame_count > self.maxframe:
+                    break
+
+                # 将帧转换为灰度图并添加到帧列表
+                gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frames.append(np.array(gray_image))
+
+                # 更新进度条
+                progress_dialog.setValue(frame_count)
+                frame_count += 1
+
+            # 完成加载后处理
+            progress_dialog.close()
+            self.framelist = np.array(frames)
+            bg=max(-10,-len(self.file_path))
+            self.log_message(f"Loaded video: {self.file_path}, fps: {fps}", "INFO")
+            self.file_label.setText("Selected file:" + self.file_path[-10:-1:])
+            global GlobalFrameSource
+            GlobalFrameSource=self.file_path[bg:-1:]
+            self.is_video=True
+            self.update_frame()
+            self.if_load_frame=True
+        except Exception as e:
+            self.log_message(f"Failed to load video file with error: {str(e)}", "INFO")
             self.framelist = np.array([])
-            return
 
-        # 获取视频总帧数和帧率
-        total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = video.get(cv2.CAP_PROP_FPS)
 
-        # 初始化进度条
-        progress_dialog = QProgressDialog("Loading video...", "Cancel", 0, total_frames, self)
-        progress_dialog.setWindowTitle("Loading Progress")
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.show()
-
-        frame_count = 1  # 从1开始计数
-        while True:
-            # 检查是否取消
-            if progress_dialog.wasCanceled():
-                self.log_message("Video loading canceled by the user.", "INFO")
-                break
-
-            # 读取当前帧
-            ret, frame = video.read()
-            if not ret or frame_count > self.maxframe:
-                break
-
-            # 将帧转换为灰度图并添加到帧列表
-            gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            frames.append(np.array(gray_image))
-
-            # 更新进度条
-            progress_dialog.setValue(frame_count)
-            frame_count += 1
-
-        # 完成加载后处理
-        progress_dialog.close()
-        self.framelist = np.array(frames)
-        self.log_message(f"Loaded video: {self.file_path}, fps: {fps}", "INFO")
-        self.file_label.setText("Selected file:" + self.file_path[-10:-1:])
-        self.is_video=True
-        self.update_frame()
-        self.if_load_frame=True
-
-            
-
+        
     def update_frame(self):
         try:
             frame_idx = self.frame_slider.value()
             self.current_frame = self.framelist[frame_idx]
             self.plot_frame()
         except Exception as e:
-            self.log_message(f"Fail to plot frame {frame_idx} with error {str(e)}")
+            self.log_message(f"Fail to plot frame {frame_idx} with error {str(e)}","DEBUGGER")
 
 
     def plot_frame(self):
@@ -525,6 +552,7 @@ class MSDTab(QWidget):
         left_panel = QWidget()
         left_layout = QVBoxLayout()
 
+
         # CSV 文件加载
         self.file_label = QLabel("No file selected")
         self.file_button = QPushButton("Load CSV")
@@ -539,10 +567,32 @@ class MSDTab(QWidget):
         left_layout.addWidget(self.send_label)
         left_layout.addWidget(self.send_button)
 
+        # 参数输入
+        form_layout = QFormLayout()
+        self.micron_per_pixel_input = QLineEdit("1.0")
+        self.fps_input = QLineEdit("1.0")
+        self.filtersubs_input = QLineEdit("0")
+        self.drift_input = QCheckBox("")
+        self.smoothwindow_input = QLineEdit("10")
+        self.errorthreahold_input = QLineEdit("0.1")
+
+        form_layout.addRow("Micron per Pixel:", self.micron_per_pixel_input)
+        form_layout.addRow("FPS:", self.fps_input)
+        form_layout.addRow("Filter Stubs:", self.filtersubs_input)
+        form_layout.addRow("Subtract Drift:", self.drift_input)
+        form_layout.addRow("Smooth Window:", self.smoothwindow_input)
+        form_layout.addRow("Error Threshold:", self.errorthreahold_input)
+        left_layout.addLayout(form_layout)
+
         # 计算 MSD 按钮
         self.calculate_button = QPushButton("Calculate MSD")
         self.calculate_button.clicked.connect(self.calculate_msd)
         left_layout.addWidget(self.calculate_button)
+
+        #导出msd按钮
+        self.export_button = QPushButton("Export MSD to CSV")
+        self.export_button.clicked.connect(self.export_csv)
+        left_layout.addWidget(self.export_button)
 
         #日志显示区
         self.log_area = QTextEdit()
@@ -579,7 +629,16 @@ class MSDTab(QWidget):
         self.file_path, _ = QFileDialog.getOpenFileName(self, "Open CSV File", "", "CSV Files (*.csv)")
         if self.file_path:
             self.file_label.setText(self.file_path)
-            self.trajectories = pd.read_csv(self.file_path)
+            data = pd.read_csv(self.file_path)
+            required_columns = ['x', 'y', 'frame', 'particle']
+            if not all(col in data.columns for col in required_columns):
+                try:
+                    data=imagej2tpy(data)
+                except:
+                    self.log_message("Invalid CSV file format","INFO")
+                    return
+            self.log_message(f"Loaded CSV file: {self.file_path}","INFO")
+            self.trajectories=data
         self.if_load_data=True
     def send_csv(self):
         try:
@@ -588,6 +647,16 @@ class MSDTab(QWidget):
             self.log_message("Received trajectories from track page","INFO")
         except Exception as e:
             self.log_message(f"Fail to send csv from track page as error:{str(e)}","INFO")
+    def export_csv(self):
+        if hasattr(self, 'msd'):
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
+            if file_path:
+                self.msd.to_csv(file_path, index=False)
+                self.log_message(f"MSD has be saved to path:{file_path}","INFO")
+            else:
+                self.log_message("Invalid file path")
+        else:
+            self.log_message("empty MSD","INFO")
     def log_message(self, message,level="DEBUGER"):
         """向日志显示区添加日志信息"""
         if getloglevel(LOGLEVEL)>=getloglevel(level):
@@ -596,23 +665,80 @@ class MSDTab(QWidget):
 
 
     def calculate_msd(self):
+        #TODO:
+        #fig3中的error阈值线标注
+        #fig4中拟合结果图注
+        #漂移的去头尾smooth
+        #输出结果的位数确定，log框延长到底部
+        #msd的导出
+        #错误处理
+        #修饰图注增加标题
         if hasattr(self, 'trajectories'):
-            # try:
-                t1 = tp.filter_stubs(self.trajectories,10)
-                d = tp.compute_drift(t1,smoothing=50)
-                tm = tp.subtract_drift(t1.copy(), d)
-                em = tp.emsd(tm,mpp=1,fps=1,detail=True,max_lagtime=999999)
-                print(em)
-                print(em["lagt"])
-                self.figure.clear()
-                ax = self.figure.add_subplot(111)
-                ax.scatter(em["lagt"],em["msd"],s=1)
-                ax.set_xlabel('Time lag/s')
-                ax.set_ylabel(r"$<\Delta r^2>/\mu m^2$")
-                self.canvas.draw()
+            try:
+                mpp = float(self.micron_per_pixel_input.text())
+                fps = float(self.fps_input.text())
+                swindow=int(self.smoothwindow_input.text())
+                if_drift=self.drift_input.isChecked()
+                filter_stubs=min(0,int(self.filtersubs_input.text()))
+                errorthreahold=float(self.errorthreahold_input.text())
 
-            # except Exception as e:
-            #     self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
+                t1 = tp.filter_stubs(self.trajectories,filter_stubs)
+
+                d = tp.compute_drift(t1,smoothing=swindow)
+                if if_drift:
+                    tm = tp.subtract_drift(t1.copy(), d)
+                else:
+                    tm=t1
+                em = tp.emsd(tm,mpp=mpp,fps=fps,detail=True,max_lagtime=999999)
+                self.figure.clear()
+                ax1=self.figure.add_subplot(221)
+                tp.plot_traj(tm,ax=ax1)
+                ax2 = self.figure.add_subplot(222)
+                ax2.plot(d.index,d["x"]*mpp,label="x")
+                ax2.plot(d.index,d["y"]*mpp,label="y")
+                ax2.set_xlabel('Frame')
+                ax2.set_ylabel('Mean Drift')
+                ax2.set_title('Mean Drift of x,y')
+                ax2.legend()
+                ax3 = self.figure.add_subplot(223)
+                x,y=em["lagt"],em["msd"]
+                errors=1/np.sqrt(em["N"])
+                ax3.set_xlabel('Time lag/s')
+                ax3.set_ylabel(r"$MSD/\mu m^2$")
+                ax3.set_title('Mean Square Displacement')
+                ax3.scatter(x, y,s=3,marker="s")
+                ax3.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.1)
+                ax4 = self.figure.add_subplot(224)
+                def linear_func(x, k):
+                    return k * x
+                maxlagt=np.count_nonzero(1/np.sqrt(em["N"])<errorthreahold)
+                x=em["lagt"][:maxlagt]
+                y=em["msd"][:maxlagt]
+                errors=1/np.sqrt(em["N"])[:maxlagt]         
+                # 进行带误差的拟合
+                popt, pcov = curve_fit(linear_func, x, y,sigma=errors)
+                # 提取拟合参数和误差
+                slope = popt[0]
+                slope_error = np.sqrt(pcov[0, 0])
+                # 绘制数据
+                ax4.scatter(x, y,s=3,marker="s")
+                ax4.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.2)
+                #绘制拟合线
+                ax4.plot(x, slope * x,c="r")
+                y_fit=slope * x 
+                # 计算R²
+                ss_res = np.sum((y - y_fit) ** 2)
+                ss_tot = np.sum((y - np.mean(y)) ** 2)
+                r = 1 - (ss_res / ss_tot)
+                ax4.set_ylabel(r"$MSD/\mathrm{\mu m^2}$",size=10)
+                ax4.set_xlabel(r"$\Delta t/\mathrm{s}$",size=10)
+                ax4.legend([r"$MSD-\Delta t$",r"fit with $y=mx$"])
+                self.canvas.draw()
+                self.log_message("MSD has been calculated","INFO")
+                self.log_message(f"Fit with y=m x:slope:{slope:.5f}±{slope_error:.5f} μm²/s,R^2={r**2}","INFO")
+                self.log_message(f"Diffusion coefficient: {slope/4:.5f} ± {slope_error/4:.5f} μm²/s","INFO")
+            except Exception as e:
+                self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
         else:
             self.log_message("empty trajectories")
 
