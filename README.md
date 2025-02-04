@@ -7,8 +7,4 @@ Features include:
 - Diffusion coefficient calculation
 - Handling of average drift
 
-Author: xyc
-Email: 22307110070@m.fudan.edu.cn
-Date: 2025-2-4
-
 The GUI part is based on PyQt, and particle tracking and diffusion calculations are powered by the `trackpy` library(https://github.com/soft-matter/trackpy).
