@@ -1,3 +1,23 @@
+"""
+This is an application designed for particle tracking and Mean Squared Displacement (MSD) calculation 
+to determine the diffusion coefficient. It is used for the teaching of "Measurement of Avogadro's constant via diffusion coefficient" in the course of "物理实验(下)" of Fudan University.
+
+Features include:
+- Particle tracking in video or sequential frames
+- MSD calculation and statistical error estimation
+- Diffusion coefficient calculation
+- Handling of average drift
+
+Author: xyc
+Email: 22307110070@m.fudan.edu.cn
+Date: 2025-2-4
+
+The GUI part is based on PyQt, and particle tracking and diffusion calculations are powered by the `trackpy` library(https://github.com/soft-matter/trackpy).
+"""
+
+# Import the necessary library
+import trackpy as tp
+
 import sys
 import cv2
 import trackpy as tp
@@ -6,13 +26,57 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from PIL import Image
-from brown import *
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QFileDialog, QLabel, QLineEdit, QTabWidget, QFormLayout,QCheckBox,QTextEdit,QFileDialog, QProgressDialog, QMessageBox
-from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QFileDialog, QLabel, QLineEdit, QTabWidget, QFormLayout,QCheckBox,QTextEdit,QFileDialog, QProgressDialog, QMessageBox,QDialog,QProgressBar
+from PyQt5.QtCore import Qt,QObject, pyqtSignal
+import logging
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from concurrent.futures import ThreadPoolExecutor, Future
+
 
 LOGLEVEL="DEBUGGER"
+GlobalTrajectory=None
+
+# 自定义日志处理器，用于将日志信息传递到弹窗
+class QtLogHandler(logging.Handler, QObject):
+    log_signal = pyqtSignal(str)  # 定义一个信号，用于传递日志消息
+
+    def __init__(self):
+        super().__init__()
+        logging.Handler.__init__(self)
+        QObject.__init__(self)
+
+    def emit(self, record):
+        msg = self.format(record)  # 获取日志消息
+        self.log_signal.emit(msg)  # 通过信号发送消息
+
+
+# 弹窗类
+class BatchProgressDialog(QDialog):
+    def __init__(self,batchname="Tracking Process",parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Tracking Process")
+        self.setModal(True)  # 设置为模态窗口
+        self.setGeometry(100, 100, 400, 300)
+        # 初始化线程池
+        ncpu=os.cpu_count()
+        nth=max([ncpu-4,1,ncpu//2])
+        self.executor = ThreadPoolExecutor(max_workers=nth)
+        self.future = None
+        # 布局
+        layout = QVBoxLayout()
+        # 日志显示区域
+        self.log_display = QTextEdit(self)
+        self.log_display.setReadOnly(True)  # 设置为只读
+        layout.addWidget(self.log_display)
+        self.setLayout(layout)
+        # 初始化状态
+        self.is_cancelled = False
+
+    def update_log(self, msg):
+        """更新日志显示"""
+        self.log_display.append(msg)
+
 
 def getloglevel(level):
     if level=="DEBUGGER":
@@ -51,6 +115,7 @@ class TrajectoryTab(QWidget):
         super().__init__()
         self.initUI()
         self.maxframe=100000
+        self.if_load_frame=False
 
     def initUI(self):
         # 使用 QHBoxLayout 实现左右布局
@@ -152,6 +217,7 @@ class TrajectoryTab(QWidget):
         layout.addWidget(left_panel, stretch=1)
         layout.addWidget(right_panel, stretch=3)
         self.setLayout(layout)
+        
 
     def provide_value(self):
         try:
@@ -246,6 +312,7 @@ class TrajectoryTab(QWidget):
             self.log_message(f"Loaded image sequence from: {imagefolder}", "INFO")
             self.is_video=False
             self.update_frame()
+            self.if_load_frame=True
 
         except Exception as e:
             # 如果加载过程中出错，记录日志
@@ -306,6 +373,7 @@ class TrajectoryTab(QWidget):
         self.file_label.setText("Selected file:" + self.file_path[-10:-1:])
         self.is_video=True
         self.update_frame()
+        self.if_load_frame=True
 
             
 
@@ -325,6 +393,9 @@ class TrajectoryTab(QWidget):
         self.canvas.draw()
 
     def preview_particles(self):
+        if not self.if_load_frame:
+            self.log_message("No frame loaded","INFO")
+            return
         self.provide_value()
         try:
             radius = get_radius(float(self.diameter_input.text()))
@@ -343,17 +414,35 @@ class TrajectoryTab(QWidget):
             ax.set(xlabel='mass', ylabel='count')
             self.hcanvas.draw()
         except Exception as e:
-            self.load_imagesequence(f"Fail to locate particle as error {str(e)}")
-
+            self.log_message(f"Fail to locate particle as error {str(e)}","INFO")
 
     def track_particles(self):
+        """启动 batch 处理"""
+        if not self.if_load_frame:
+            self.log_message("No frame loaded","INFO")
+            return
+
+        # 创建弹窗
+        self.progress_dialog = BatchProgressDialog(self)
+        self.progress_dialog.show()
+
+        # 设置日志处理器
+        self.log_handler = QtLogHandler()
+        self.log_handler.setFormatter(logging.Formatter('%(message)s'))
+        self.log_handler.log_signal.connect(self.progress_dialog.update_log)  # 连接信号到弹窗
+        logging.getLogger().addHandler(self.log_handler)
+        logging.getLogger().setLevel(logging.INFO)
+        logging.info("Creating tracking process...")
+        # 在后台运行 batch
+        self.progress_dialog.future = self.progress_dialog.executor.submit(self._track_particles)
+        
+
+
+
+
+    def _track_particles(self):
         self.provide_value()
-        # 创建并显示加载弹窗
-        progress_dialog = QProgressDialog("Tracking particles...", None, 0, 0, self)
-        progress_dialog.setWindowTitle("Loading")
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setCancelButton(None)  # 禁用取消按钮
-        progress_dialog.show()
+        global GlobalTrajectory
         try:
             radius = get_radius(float(self.diameter_input.text()))
             invert = self.invert_input.isChecked()
@@ -361,18 +450,29 @@ class TrajectoryTab(QWidget):
             separation = int(self.separation_input.text())
             searchrange=int(self.searchrange_input.text())
             memory=int(self.memory_input.text())
+
             # 执行粒子跟踪
-            t = tp.batch(self.framelist, radius, invert=invert, minmass=minmass, separation=separation)
+            t = tp.batch(self.framelist, radius, invert=invert, minmass=minmass, separation=separation,processes="auto")
             self.trajectories=tp.link(t,search_range=searchrange, memory=memory)
             # 关闭加载弹窗
             self.plot_trajectories()
-            progress_dialog.close()
+            GlobalTrajectory=self.trajectories
         except Exception as e:
             # 关闭加载弹窗
-            progress_dialog.close()
-            self.load_imagesequence(f"Fail to track as the error:{str(e)}","INFO")
+            self.log_message(f"Fail to track as the error:{str(e)}","INFO")
             # 显示错误信息
             QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+        finally:
+            # 清理日志处理器
+            logging.getLogger().removeHandler(self.log_handler)
+
+    def closeEvent(self, event):
+        """关闭主窗口时终止后台任务"""
+        if self.progress_dialog.future and not self.progress_dialog.future.done():
+            self.progress_dialog.future.cancel()
+        self.progress_dialog.executor.shutdown(wait=False)
+        event.accept()
+
 
     def plot_trajectories(self):
             t=self.trajectories
@@ -401,11 +501,21 @@ class TrajectoryTab(QWidget):
             file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
             if file_path:
                 self.trajectories.to_csv(file_path, index=False)
+                self.log_message(f"Trajectorise has be saved to path:{file_path}","INFO")
+            else:
+                self.log_message("Invalid file path")
+        else:
+            self.log_message("empty trajactories","INFO")
+            
+
+        
+                
 
 class MSDTab(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
+        self.if_load_data=False
 
     def initUI(self):
         # 使用 QHBoxLayout 实现左右布局
@@ -422,10 +532,26 @@ class MSDTab(QWidget):
         left_layout.addWidget(self.file_label)
         left_layout.addWidget(self.file_button)
 
+        # CSV from Track
+        self.send_label = QLabel("No file selected")
+        self.send_button = QPushButton("Send CSV from Track Page")
+        self.send_button.clicked.connect(self.send_csv)
+        left_layout.addWidget(self.send_label)
+        left_layout.addWidget(self.send_button)
+
         # 计算 MSD 按钮
         self.calculate_button = QPushButton("Calculate MSD")
         self.calculate_button.clicked.connect(self.calculate_msd)
         left_layout.addWidget(self.calculate_button)
+
+        #日志显示区
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)  # 设置为只读
+        self.log_area.setMaximumHeight(100)  # 设置日志显示区的高度
+        left_layout.addWidget(QLabel("Log:"))
+        left_layout.addWidget(self.log_area)
+
+        left_panel.setLayout(left_layout)
 
         # 添加伸缩空间
         left_layout.addStretch()
@@ -454,16 +580,41 @@ class MSDTab(QWidget):
         if self.file_path:
             self.file_label.setText(self.file_path)
             self.trajectories = pd.read_csv(self.file_path)
+        self.if_load_data=True
+    def send_csv(self):
+        try:
+            self.trajectories=GlobalTrajectory
+            self.if_load_data=True
+            self.log_message("Received trajectories from track page","INFO")
+        except Exception as e:
+            self.log_message(f"Fail to send csv from track page as error:{str(e)}","INFO")
+    def log_message(self, message,level="DEBUGER"):
+        """向日志显示区添加日志信息"""
+        if getloglevel(LOGLEVEL)>=getloglevel(level):
+            self.log_area.append(message)  # 追加日志信息
+            self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum()) 
+
 
     def calculate_msd(self):
         if hasattr(self, 'trajectories'):
-            msd = tp.emsd(self.trajectories, mpp=1, fps=1)
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
-            ax.plot(msd.index, msd, 'o-')
-            ax.set_xlabel('Time lag')
-            ax.set_ylabel('MSD')
-            self.canvas.draw()
+            # try:
+                t1 = tp.filter_stubs(self.trajectories,10)
+                d = tp.compute_drift(t1,smoothing=50)
+                tm = tp.subtract_drift(t1.copy(), d)
+                em = tp.emsd(tm,mpp=1,fps=1,detail=True,max_lagtime=999999)
+                print(em)
+                print(em["lagt"])
+                self.figure.clear()
+                ax = self.figure.add_subplot(111)
+                ax.scatter(em["lagt"],em["msd"],s=1)
+                ax.set_xlabel('Time lag/s')
+                ax.set_ylabel(r"$<\Delta r^2>/\mu m^2$")
+                self.canvas.draw()
+
+            # except Exception as e:
+            #     self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
+        else:
+            self.log_message("empty trajectories")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
