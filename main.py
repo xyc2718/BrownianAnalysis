@@ -26,7 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from PIL import Image
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QFileDialog, QLabel, QLineEdit, QTabWidget, QFormLayout,QCheckBox,QTextEdit,QFileDialog, QProgressDialog, QMessageBox,QDialog,QProgressBar
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QFileDialog, QLabel, QLineEdit, QTabWidget, QFormLayout,QCheckBox,QTextEdit,QFileDialog, QProgressDialog, QMessageBox,QDialog,QProgressBar,QScrollArea
 from PyQt5.QtCore import Qt,QObject, pyqtSignal
 import logging
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -34,7 +34,7 @@ from matplotlib.figure import Figure
 from concurrent.futures import ThreadPoolExecutor, Future
 
 
-LOGLEVEL="INFO"
+LOGLEVEL="DEBUGGER"
 GlobalTrajectory=None
 GlobalFrameSource=None
 
@@ -70,6 +70,7 @@ class QtLogHandler(logging.Handler, QObject):
 
 # 弹窗类
 class BatchProgressDialog(QDialog):
+    error_signal = pyqtSignal(str)
     def __init__(self,batchname="Tracking Process",parent=None):
         super().__init__(parent)
         self.setWindowTitle("Tracking Process")
@@ -80,6 +81,7 @@ class BatchProgressDialog(QDialog):
         nth=max([ncpu-4,1,ncpu//2])
         self.executor = ThreadPoolExecutor(max_workers=nth)
         self.future = None
+        self.error_signal.connect(self.show_error)
         # 布局
         layout = QVBoxLayout()
         # 日志显示区域
@@ -93,6 +95,8 @@ class BatchProgressDialog(QDialog):
     def update_log(self, msg):
         """更新日志显示"""
         self.log_display.append(msg)
+    def show_error(self, error_msg):
+        QMessageBox.critical(self, "Error", f"An error occurred: {error_msg}")
 
 
 def getloglevel(level):
@@ -115,7 +119,7 @@ def get_radius(diameter):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Particle Tracking and MSD Analysis")
+        self.setWindowTitle("BrownianMetrics")
         self.setGeometry(100, 100, 1200, 800)
 
         # Create tabs
@@ -215,11 +219,21 @@ class TrajectoryTab(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout()
 
+        slider_layout = QHBoxLayout()
         # 帧滑动条
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setMinimum(0)
         self.frame_slider.valueChanged.connect(self.update_frame)
-        right_layout.addWidget(self.frame_slider)
+         # 滑动条值显示标签
+        self.slider_label = QLabel(f"Frame: {self.frame_slider.value()}")
+        self.slider_label.setAlignment(Qt.AlignCenter)
+        # 将 QLabel 和 QSlider 添加到水平布局
+        slider_layout.addWidget(self.slider_label)
+        slider_layout.addWidget(self.frame_slider)
+
+        # 添加到主垂直布局
+        right_layout.addLayout(slider_layout)
+
 
         
 
@@ -323,16 +337,28 @@ class TrajectoryTab(QWidget):
             # 关闭进度条
             progress_dialog.close()
             self.file_path=image_path
-            bg=max(-10,-len(imagefolder))
-            self.img_label.setText("Selected file: " + self.file_path[bg:-1:])
+            bg=15
+            if len(imagefolder)>bg:
+                self.img_label.setText("Selected path:..."+imagefolder[-bg::])
+            else:
+                self.img_label.setText("Selected path:"+imagefolder)
             global GlobalFrameSource
             GlobalFrameSource=self.file_path[bg:-1:]
             # 如果成功加载图片，更新 framelist
             self.framelist = np.array(image_sequence)
-            self.log_message(f"Loaded image sequence from: {imagefolder}", "INFO")
+            
             self.is_video=False
-            self.update_frame()
             self.if_load_frame=True
+            self.nframes=len(self.framelist)
+            self.frame_slider.setMaximum(self.nframes-1)
+            step=min(max(self.nframes//1000,1),10)
+            self.log_message(f"step:{step}","DEBUGGER")
+            self.frame_slider.setSingleStep(step)
+            if self.nframes>2000:
+                self.frame_slider.setTickInterval(step)
+            self.log_message(f"Loaded image sequence from: {imagefolder},Total frames: {self.nframes}", "INFO")
+            self.update_frame()
+
 
         except Exception as e:
             # 如果加载过程中出错，记录日志
@@ -392,12 +418,24 @@ class TrajectoryTab(QWidget):
             self.framelist = np.array(frames)
             bg=max(-10,-len(self.file_path))
             self.log_message(f"Loaded video: {self.file_path}, fps: {fps}", "INFO")
-            self.file_label.setText("Selected file:" + self.file_path[-10:-1:])
+            bg=15
+            if len(self.file_path)>bg:
+                self.file_label.setText("Selected File:..."+self.file_path[-bg::])
+            else:
+                self.file_label.setText("Selected File:"+self.file_path)
             global GlobalFrameSource
-            GlobalFrameSource=self.file_path[bg:-1:]
+            GlobalFrameSource=self.file_path[bg::]
             self.is_video=True
-            self.update_frame()
             self.if_load_frame=True
+            self.update_frame()
+            self.nframes=len(self.framelist)
+            self.frame_slider.setMaximum(self.nframes-1)
+            step=min(max(self.nframes//1000,1),10)
+            self.log_message(f"step:{step}","DEBUGGER")
+            self.frame_slider.setSingleStep(step)
+            if self.nframes>2000:
+                self.frame_slider.setTickInterval(step)
+            self.log_message(f"Loaded image sequence from: {self.file_path},Total frames: {self.nframes}", "INFO")
         except Exception as e:
             self.log_message(f"Failed to load video file with error: {str(e)}", "INFO")
             self.framelist = np.array([])
@@ -407,8 +445,12 @@ class TrajectoryTab(QWidget):
     def update_frame(self):
         try:
             frame_idx = self.frame_slider.value()
+            if not self.if_load_frame:
+                self.log_message("No frame loaded","INFO")
+                return
             self.current_frame = self.framelist[frame_idx]
             self.plot_frame()
+            self.slider_label.setText(f"Frame: {frame_idx}")
         except Exception as e:
             self.log_message(f"Fail to plot frame {frame_idx} with error {str(e)}","DEBUGGER")
 
@@ -487,8 +529,8 @@ class TrajectoryTab(QWidget):
         except Exception as e:
             # 关闭加载弹窗
             self.log_message(f"Fail to track as the error:{str(e)}","INFO")
-            # 显示错误信息
-            QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+            # 通过信号传递错误信息到主线程
+            self.progress_dialog.error_signal.emit(str(e))
         finally:
             # 清理日志处理器
             logging.getLogger().removeHandler(self.log_handler)
@@ -573,7 +615,7 @@ class MSDTab(QWidget):
         self.fps_input = QLineEdit("1.0")
         self.filtersubs_input = QLineEdit("0")
         self.drift_input = QCheckBox("")
-        self.smoothwindow_input = QLineEdit("10")
+        self.smoothwindow_input = QLineEdit("100")
         self.errorthreahold_input = QLineEdit("0.1")
 
         form_layout.addRow("Micron per Pixel:", self.micron_per_pixel_input)
@@ -595,11 +637,21 @@ class MSDTab(QWidget):
         left_layout.addWidget(self.export_button)
 
         #日志显示区
+        # self.log_area = QTextEdit()
+        # self.log_area.setReadOnly(True)  # 设置为只读
+        # self.log_area.setMaximumHeight(100)  # 设置日志显示区的高度
+        # left_layout.addWidget(QLabel("Log:"))
+        # left_layout.addWidget(self.log_area)
+        self.log_label = QLabel("Log:")
+        left_layout.addWidget(self.log_label)
         self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)  # 设置为只读
-        self.log_area.setMaximumHeight(100)  # 设置日志显示区的高度
-        left_layout.addWidget(QLabel("Log:"))
-        left_layout.addWidget(self.log_area)
+        self.log_area.setReadOnly(True)
+        scroll = QScrollArea()
+        scroll.setWidget(self.log_area)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumSize(200, 100)  # 设置最小尺寸
+
+        left_layout.addWidget(scroll)
 
         left_panel.setLayout(left_layout)
 
@@ -628,7 +680,6 @@ class MSDTab(QWidget):
     def load_csv(self):
         self.file_path, _ = QFileDialog.getOpenFileName(self, "Open CSV File", "", "CSV Files (*.csv)")
         if self.file_path:
-            self.file_label.setText(self.file_path)
             data = pd.read_csv(self.file_path)
             required_columns = ['x', 'y', 'frame', 'particle']
             if not all(col in data.columns for col in required_columns):
@@ -637,6 +688,13 @@ class MSDTab(QWidget):
                 except:
                     self.log_message("Invalid CSV file format","INFO")
                     return
+            bg=15
+            if len(self.file_path)>bg:
+                self.file_label.setText("Selected File:..."+self.file_path[-bg::])
+            else:
+                self.file_label.setText("Selected File:"+self.file_path)
+                
+
             self.log_message(f"Loaded CSV file: {self.file_path}","INFO")
             self.trajectories=data
         self.if_load_data=True
@@ -644,13 +702,22 @@ class MSDTab(QWidget):
         try:
             self.trajectories=GlobalTrajectory
             self.if_load_data=True
-            self.log_message("Received trajectories from track page","INFO")
+            if self.trajectories is not None:
+                self.log_message("Received trajectories from track page","INFO")
+                bg=10
+                if len(GlobalFrameSource)>bg:
+                    self.send_label.setText("Received trajectories from:..."+GlobalFrameSource[-bg::])
+                else:
+                    self.send_label.setText("Received trajectories from:"+GlobalFrameSource)
+            else:
+                self.log_message("No trajectories received from track page","INFO")
         except Exception as e:
             self.log_message(f"Fail to send csv from track page as error:{str(e)}","INFO")
     def export_csv(self):
         if hasattr(self, 'msd'):
             file_path, _ = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV Files (*.csv)")
             if file_path:
+
                 self.msd.to_csv(file_path, index=False)
                 self.log_message(f"MSD has be saved to path:{file_path}","INFO")
             else:
@@ -666,13 +733,9 @@ class MSDTab(QWidget):
 
     def calculate_msd(self):
         #TODO:
-        #fig3中的error阈值线标注
-        #fig4中拟合结果图注
         #漂移的去头尾smooth
-        #输出结果的位数确定，log框延长到底部
-        #msd的导出
         #错误处理
-        #修饰图注增加标题
+        #修饰图注增加标题 
         if hasattr(self, 'trajectories'):
             try:
                 mpp = float(self.micron_per_pixel_input.text())
@@ -685,14 +748,18 @@ class MSDTab(QWidget):
                 t1 = tp.filter_stubs(self.trajectories,filter_stubs)
 
                 d = tp.compute_drift(t1,smoothing=swindow)
+
                 if if_drift:
                     tm = tp.subtract_drift(t1.copy(), d)
                 else:
                     tm=t1
                 em = tp.emsd(tm,mpp=mpp,fps=fps,detail=True,max_lagtime=999999)
+                errors=1/np.sqrt(em["N"])
+                maxlagt=np.count_nonzero(1/np.sqrt(em["N"])<errorthreahold)
                 self.figure.clear()
                 ax1=self.figure.add_subplot(221)
                 tp.plot_traj(tm,ax=ax1)
+                ax1.set_title('Trajectories')
                 ax2 = self.figure.add_subplot(222)
                 ax2.plot(d.index,d["x"]*mpp,label="x")
                 ax2.plot(d.index,d["y"]*mpp,label="y")
@@ -702,7 +769,27 @@ class MSDTab(QWidget):
                 ax2.legend()
                 ax3 = self.figure.add_subplot(223)
                 x,y=em["lagt"],em["msd"]
-                errors=1/np.sqrt(em["N"])
+                x0=x.iloc[maxlagt]
+                ymin=np.min(y)
+                ymax=np.max(y+np.abs(errors*y))
+
+                ### 箭头标注
+            #     arrowy=160
+            #     arrowx=20
+            #     ax3.annotate(
+            #     r'$\frac{\Delta \rho_k}{<\rho_k>}<10\%$', 
+            #     fontsize=14,# 注释文本
+            #     xy=(x0-arrowx, arrowy+2),            # 箭头指向的坐标
+            #     xytext=(x0, arrowy),       # 注释文本的位置
+            #     arrowprops=dict(
+            #         arrowstyle="->",  # 箭头样式
+            #         color="red",     # 箭头颜色
+            #         lw=0           # 箭头宽度
+            #     )
+            # )
+                ###
+                
+                ax3.plot([x0,x0],[ymin,ymax],c="r",linestyle="--")
                 ax3.set_xlabel('Time lag/s')
                 ax3.set_ylabel(r"$MSD/\mu m^2$")
                 ax3.set_title('Mean Square Displacement')
@@ -711,7 +798,6 @@ class MSDTab(QWidget):
                 ax4 = self.figure.add_subplot(224)
                 def linear_func(x, k):
                     return k * x
-                maxlagt=np.count_nonzero(1/np.sqrt(em["N"])<errorthreahold)
                 x=em["lagt"][:maxlagt]
                 y=em["msd"][:maxlagt]
                 errors=1/np.sqrt(em["N"])[:maxlagt]         
@@ -730,17 +816,36 @@ class MSDTab(QWidget):
                 ss_res = np.sum((y - y_fit) ** 2)
                 ss_tot = np.sum((y - np.mean(y)) ** 2)
                 r = 1 - (ss_res / ss_tot)
+                prc=getprc(slope_error)
+                prcR=getprc(1-r**2)
+                prcd=getprc(slope_error/4)
                 ax4.set_ylabel(r"$MSD/\mathrm{\mu m^2}$",size=10)
                 ax4.set_xlabel(r"$\Delta t/\mathrm{s}$",size=10)
                 ax4.legend([r"$MSD-\Delta t$",r"fit with $y=mx$"])
+                ax4.set_title('Mean Square Displacement Fit')
+                
+                xt=np.max(x)*0.4
+                yt=np.min(y)+(np.max(y)-np.min(y))*0.1
+                ax4.text(xt,yt,f"m={slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s\nR²={r**2:.{prcR}f}")
                 self.canvas.draw()
+
+             
+                self.log_message(f"prc,prcd,prcR:{prc},{prcd},{prcR}","DEBUGGER")
                 self.log_message("MSD has been calculated","INFO")
-                self.log_message(f"Fit with y=m x:slope:{slope:.5f}±{slope_error:.5f} μm²/s,R^2={r**2}","INFO")
-                self.log_message(f"Diffusion coefficient: {slope/4:.5f} ± {slope_error/4:.5f} μm²/s","INFO")
+                self.log_message(f"Fit with y=m x:slope:{slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s,R²={r**2:.{prcR}f}","INFO")
+                self.log_message(f"Diffusion coefficient: {slope/4:.{prcd+1}f} ± {slope_error/4:.{prcd+1}f} μm²/s","INFO")
+
+                ###export msd
+                self.msd=em.copy()
+                self.msd['Relative Error'] = errors 
             except Exception as e:
                 self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
         else:
             self.log_message("empty trajectories")
+
+def getprc(dx):
+    prc = int(-np.floor(np.log10(abs(dx))))
+    return prc
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
