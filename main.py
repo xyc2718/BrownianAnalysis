@@ -119,7 +119,7 @@ def get_radius(diameter):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BrownianMetrics")
+        self.setWindowTitle("BrownianAnalysis")
         self.setGeometry(100, 100, 1200, 800)
 
         # Create tabs
