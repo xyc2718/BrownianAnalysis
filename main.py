@@ -590,6 +590,11 @@ class MSDTab(QWidget):
         super().__init__()
         self.initUI()
         self.if_load_data=False
+               # 初始化线程池
+        ncpu=os.cpu_count()
+        nth=max([ncpu-8,1,ncpu//2])
+        self.executor = ThreadPoolExecutor(max_workers=nth)
+        self.future = None
 
     def initUI(self):
         # 使用 QHBoxLayout 实现左右布局
@@ -685,12 +690,16 @@ class MSDTab(QWidget):
     def load_csv(self):
         self.file_path, _ = QFileDialog.getOpenFileName(self, "Open CSV File", "", "CSV Files (*.csv)")
         if self.file_path:
-            data = pd.read_csv(self.file_path)
+            try:
+                data = pd.read_csv(self.file_path)
+            except:
+                self.log_message("Fail to read CSV file","INFO")
+                return
             required_columns = ['x', 'y', 'frame', 'particle']
             if not all(col in data.columns for col in required_columns):
                 try:
                     data=imagej2tpy(data)
-                except:
+                except: 
                     self.log_message("Invalid CSV file format","INFO")
                     return
             bg=15
@@ -735,118 +744,123 @@ class MSDTab(QWidget):
             self.log_area.append(message)  # 追加日志信息
             self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum()) 
 
-
     def calculate_msd(self):
+        self.log_message("Calculating MSD...","INFO")
+    # 在后台运行 batch
+        self.future = self.executor.submit(self._calculate_msd)
+
+
+    def _calculate_msd(self):
         #TODO:
         #漂移的去头尾smooth
         #错误处理
         #修饰图注增加标题 
-        if hasattr(self, 'trajectories'):
-            try:
-                mpp = float(self.micron_per_pixel_input.text())
-                fps = float(self.fps_input.text())
-                swindow=int(self.smoothwindow_input.text())
-                if_drift=self.drift_input.isChecked()
-                filter_stubs=min(0,int(self.filtersubs_input.text()))
-                errorthreahold=float(self.errorthreahold_input.text())
-
-                t1 = tp.filter_stubs(self.trajectories,filter_stubs)
-
-                d = tp.compute_drift(t1,smoothing=swindow)
-
-                if if_drift:
-                    tm = tp.subtract_drift(t1.copy(), d)
-                else:
-                    tm=t1
-                em = tp.emsd(tm,mpp=mpp,fps=fps,detail=True,max_lagtime=999999)
-                errors=1/np.sqrt(em["N"])
-                maxlagt=np.count_nonzero(1/np.sqrt(em["N"])<errorthreahold)
-                self.figure.clear()
-                ax1=self.figure.add_subplot(221)
-                tp.plot_traj(tm,ax=ax1)
-                ax1.set_title('Trajectories')
-                ax2 = self.figure.add_subplot(222)
-                ax2.plot(d.index,d["x"]*mpp,label="x")
-                ax2.plot(d.index,d["y"]*mpp,label="y")
-                ax2.set_xlabel('Frame')
-                ax2.set_ylabel('Mean Drift')
-                ax2.set_title('Mean Drift of x,y')
-                ax2.legend()
-                ax3 = self.figure.add_subplot(223)
-                x,y=em["lagt"],em["msd"]
-                x0=x.iloc[maxlagt]
-                ymin=np.min(y)
-                ymax=np.max(y+np.abs(errors*y))
-
-                ### 箭头标注
-            #     arrowy=160
-            #     arrowx=20
-            #     ax3.annotate(
-            #     r'$\frac{\Delta \rho_k}{<\rho_k>}<10\%$', 
-            #     fontsize=14,# 注释文本
-            #     xy=(x0-arrowx, arrowy+2),            # 箭头指向的坐标
-            #     xytext=(x0, arrowy),       # 注释文本的位置
-            #     arrowprops=dict(
-            #         arrowstyle="->",  # 箭头样式
-            #         color="red",     # 箭头颜色
-            #         lw=0           # 箭头宽度
-            #     )
-            # )
-                ###
-                
-                ax3.plot([x0,x0],[ymin,ymax],c="r",linestyle="--")
-                ax3.set_xlabel('Time lag/s')
-                ax3.set_ylabel(r"$MSD/\mu m^2$")
-                ax3.set_title('Mean Square Displacement')
-                ax3.scatter(x, y,s=3,marker="s")
-                ax3.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.1)
-                ax4 = self.figure.add_subplot(224)
-                def linear_func(x, k):
-                    return k * x
-                x=em["lagt"][:maxlagt]
-                y=em["msd"][:maxlagt]
-                errors=1/np.sqrt(em["N"])[:maxlagt]         
-                # 进行带误差的拟合
-                popt, pcov = curve_fit(linear_func, x, y,sigma=errors)
-                # 提取拟合参数和误差
-                slope = popt[0]
-                slope_error = np.sqrt(pcov[0, 0])
-                # 绘制数据
-                ax4.scatter(x, y,s=3,marker="s")
-                ax4.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.2)
-                #绘制拟合线
-                ax4.plot(x, slope * x,c="r")
-                y_fit=slope * x 
-                # 计算R²
-                ss_res = np.sum((y - y_fit) ** 2)
-                ss_tot = np.sum((y - np.mean(y)) ** 2)
-                r = 1 - (ss_res / ss_tot)
-                prc=getprc(slope_error)
-                prcR=getprc(1-r**2)
-                prcd=getprc(slope_error/4)
-                ax4.set_ylabel(r"$MSD/\mathrm{\mu m^2}$",size=10)
-                ax4.set_xlabel(r"$\Delta t/\mathrm{s}$",size=10)
-                ax4.legend([r"$MSD-\Delta t$",r"fit with $y=mx$"])
-                ax4.set_title('Mean Square Displacement Fit')
-                
-                xt=np.max(x)*0.4
-                yt=np.min(y)+(np.max(y)-np.min(y))*0.1
-                ax4.text(xt,yt,f"m={slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s\nR²={r**2:.{prcR}f}")
-                self.canvas.draw()
-
-             
-                self.log_message(f"prc,prcd,prcR:{prc},{prcd},{prcR}","DEBUGGER")
-                self.log_message("MSD has been calculated","INFO")
-                self.log_message(f"Fit with y=m x:slope:{slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s,R²={r**2:.{prcR}f}","INFO")
-                self.log_message(f"Diffusion coefficient: {slope/4:.{prcd+1}f} ± {slope_error/4:.{prcd+1}f} μm²/s","INFO")
-
-                ###export msd
-                self.msd=em.copy()
-                self.msd['Relative Error'] = errors 
-            except Exception as e:
-                self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
-        else:
+        if not hasattr(self, 'trajectories'):
             self.log_message("empty trajectories")
+            return
+        try:
+            mpp = float(self.micron_per_pixel_input.text())
+            fps = float(self.fps_input.text())
+            swindow=int(self.smoothwindow_input.text())
+            if_drift=self.drift_input.isChecked()
+            filter_stubs=min(0,int(self.filtersubs_input.text()))
+            errorthreahold=float(self.errorthreahold_input.text())
+
+            t1 = tp.filter_stubs(self.trajectories,filter_stubs)
+
+            d = tp.compute_drift(t1,smoothing=swindow)
+
+            if if_drift:
+                tm = tp.subtract_drift(t1.copy(), d)
+            else:
+                tm=t1
+            em = tp.emsd(tm,mpp=mpp,fps=fps,detail=True,max_lagtime=999999)
+            errors=1/np.sqrt(em["N"])
+            maxlagt=np.count_nonzero(1/np.sqrt(em["N"])<errorthreahold)
+            self.figure.clear()
+            ax1=self.figure.add_subplot(221)
+            tp.plot_traj(tm,ax=ax1)
+            ax1.set_title('Trajectories')
+            ax2 = self.figure.add_subplot(222)
+            ax2.plot(d.index,d["x"]*mpp,label="x")
+            ax2.plot(d.index,d["y"]*mpp,label="y")
+            ax2.set_xlabel('Frame')
+            ax2.set_ylabel('Mean Drift')
+            ax2.set_title('Mean Drift of x,y')
+            ax2.legend()
+            ax3 = self.figure.add_subplot(223)
+            x,y=em["lagt"],em["msd"]
+            x0=x.iloc[maxlagt]
+            ymin=np.min(y)
+            ymax=np.max(y+np.abs(errors*y))
+
+            ### 箭头标注
+        #     arrowy=160
+        #     arrowx=20
+        #     ax3.annotate(
+        #     r'$\frac{\Delta \rho_k}{<\rho_k>}<10\%$', 
+        #     fontsize=14,# 注释文本
+        #     xy=(x0-arrowx, arrowy+2),            # 箭头指向的坐标
+        #     xytext=(x0, arrowy),       # 注释文本的位置
+        #     arrowprops=dict(
+        #         arrowstyle="->",  # 箭头样式
+        #         color="red",     # 箭头颜色
+        #         lw=0           # 箭头宽度
+        #     )
+        # )
+            ###
+            
+            ax3.plot([x0,x0],[ymin,ymax],c="r",linestyle="--")
+            ax3.set_xlabel('Time lag/s')
+            ax3.set_ylabel(r"$MSD/\mu m^2$")
+            ax3.set_title('Mean Square Displacement')
+            ax3.scatter(x, y,s=3,marker="s")
+            ax3.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.1)
+            ax4 = self.figure.add_subplot(224)
+            def linear_func(x, k):
+                return k * x
+            x=em["lagt"][:maxlagt]
+            y=em["msd"][:maxlagt]
+            errors=1/np.sqrt(em["N"])[:maxlagt]         
+            # 进行带误差的拟合
+            popt, pcov = curve_fit(linear_func, x, y,sigma=errors)
+            # 提取拟合参数和误差
+            slope = popt[0]
+            slope_error = np.sqrt(pcov[0, 0])
+            # 绘制数据
+            ax4.scatter(x, y,s=3,marker="s")
+            ax4.errorbar(x, y, yerr=y*errors, fmt='s', markersize=2,ecolor='gray', capsize=0.05,alpha=0.2)
+            #绘制拟合线
+            ax4.plot(x, slope * x,c="r")
+            y_fit=slope * x 
+            # 计算R²
+            ss_res = np.sum((y - y_fit) ** 2)
+            ss_tot = np.sum((y - np.mean(y)) ** 2)
+            r = 1 - (ss_res / ss_tot)
+            prc=getprc(slope_error)
+            prcR=getprc(1-r**2)
+            prcd=getprc(slope_error/4)
+            ax4.set_ylabel(r"$MSD/\mathrm{\mu m^2}$",size=10)
+            ax4.set_xlabel(r"$\Delta t/\mathrm{s}$",size=10)
+            ax4.legend([r"$MSD-\Delta t$",r"fit with $y=mx$"])
+            ax4.set_title('Mean Square Displacement Fit')
+            
+            xt=np.max(x)*0.4
+            yt=np.min(y)+(np.max(y)-np.min(y))*0.1
+            ax4.text(xt,yt,f"m={slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s\nR²={r**2:.{prcR}f}")
+            self.canvas.draw()
+
+            
+            self.log_message(f"prc,prcd,prcR:{prc},{prcd},{prcR}","DEBUGGER")
+            self.log_message("MSD has been calculated","INFO")
+            self.log_message(f"Fit with y=m x:slope:{slope:.{prc+1}f}±{slope_error:.{prc+1}f} μm²/s,R²={r**2:.{prcR}f}","INFO")
+            self.log_message(f"Diffusion coefficient: {slope/4:.{prcd+1}f} ± {slope_error/4:.{prcd+1}f} μm²/s","INFO")
+
+            ###export msd
+            self.msd=em.copy()
+            self.msd['Relative Error'] = errors 
+        except Exception as e:
+            self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
 
 def getprc(dx):
     prc = int(-np.floor(np.log10(abs(dx))))
