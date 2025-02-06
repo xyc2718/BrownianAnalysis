@@ -26,6 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from PIL import Image
+import multiprocessing
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QFileDialog, QLabel, QLineEdit, QTabWidget, QFormLayout,QCheckBox,QTextEdit,QFileDialog, QProgressDialog, QMessageBox,QDialog,QProgressBar,QScrollArea
 from PyQt5.QtCore import Qt,QObject, pyqtSignal
 import logging
@@ -34,7 +35,7 @@ from matplotlib.figure import Figure
 from concurrent.futures import ThreadPoolExecutor, Future
 
 
-LOGLEVEL="DEBUGGER"
+LOGLEVEL="INFO"
 GlobalTrajectory=None
 GlobalFrameSource=None
 
@@ -78,7 +79,7 @@ class BatchProgressDialog(QDialog):
         self.setGeometry(100, 100, 400, 300)
         # 初始化线程池
         ncpu=os.cpu_count()
-        nth=max([ncpu-4,1,ncpu//2])
+        nth=max([ncpu-8,1,ncpu//2])
         self.executor = ThreadPoolExecutor(max_workers=nth)
         self.future = None
         self.error_signal.connect(self.show_error)
@@ -526,14 +527,18 @@ class TrajectoryTab(QWidget):
             # 关闭加载弹窗
             self.plot_trajectories()
             GlobalTrajectory=self.trajectories
+            self.log_message("Tracking process finished")
         except Exception as e:
             # 关闭加载弹窗
             self.log_message(f"Fail to track as the error:{str(e)}","INFO")
             # 通过信号传递错误信息到主线程
             self.progress_dialog.error_signal.emit(str(e))
         finally:
-            # 清理日志处理器
-            logging.getLogger().removeHandler(self.log_handler)
+            try:
+                # 清理日志处理器
+                logging.getLogger().removeHandler(self.log_handler)
+            except Exception as e:
+                self.log_message(f"Fail to clear logger as error:{str(e)}","DEBUGGER")
 
     def closeEvent(self, event):
         """关闭主窗口时终止后台任务"""
@@ -848,6 +853,8 @@ def getprc(dx):
     return prc
 
 if __name__ == "__main__":
+
+    multiprocessing.freeze_support() #防止使用pyinstaller打包后重复执行主模块
     app = QApplication(sys.argv)
     main_window = MainWindow()
     main_window.show()
