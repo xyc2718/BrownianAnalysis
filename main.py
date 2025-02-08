@@ -138,6 +138,7 @@ class TrajectoryTab(QWidget):
         self.initUI()
         self.maxframe=100000
         self.if_load_frame=False
+        self.has_tracked=False
 
     def initUI(self):
         # 使用 QHBoxLayout 实现左右布局
@@ -347,6 +348,7 @@ class TrajectoryTab(QWidget):
             GlobalFrameSource=self.file_path[bg:-1:]
             # 如果成功加载图片，更新 framelist
             self.framelist = np.array(image_sequence)
+            self.has_tracked=False
             
             self.is_video=False
             self.if_load_frame=True
@@ -428,6 +430,7 @@ class TrajectoryTab(QWidget):
             GlobalFrameSource=self.file_path[bg::]
             self.is_video=True
             self.if_load_frame=True
+            self.has_tracked=False
             self.update_frame()
             self.nframes=len(self.framelist)
             self.frame_slider.setMaximum(self.nframes-1)
@@ -453,14 +456,16 @@ class TrajectoryTab(QWidget):
             self.plot_frame()
             self.slider_label.setText(f"Frame: {frame_idx}")
         except Exception as e:
-            self.log_message(f"Fail to plot frame {frame_idx} with error {str(e)}","DEBUGGER")
+            self.log_message(f"Fail to plot frame {frame_idx} with error {str(e)}","INFO")
 
 
     def plot_frame(self):
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(self.current_frame, cmap='gray',aspect='equal')
-        self.canvas.draw()
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            ax.imshow(self.current_frame, cmap='gray',aspect='equal')
+            self.canvas.draw()
+            if self.has_tracked:
+                self.plot_trajectories()
 
     def preview_particles(self):
         if not self.if_load_frame:
@@ -527,7 +532,9 @@ class TrajectoryTab(QWidget):
             # 关闭加载弹窗
             self.plot_trajectories()
             GlobalTrajectory=self.trajectories
+            logging.info("Tracking process finished")
             self.log_message("Tracking process finished")
+            self.has_tracked=True
         except Exception as e:
             # 关闭加载弹窗
             self.log_message(f"Fail to track as the error:{str(e)}","INFO")
@@ -549,6 +556,7 @@ class TrajectoryTab(QWidget):
 
 
     def plot_trajectories(self):
+        try:
             t=self.trajectories
             ax = self.figure.gca()
             kk=self.frame_slider.value()
@@ -569,6 +577,8 @@ class TrajectoryTab(QWidget):
                 ax.plot(xhis[:kk-fhis],yhis[:kk-fhis],c=color[cid],alpha=0.5)
                 # plt.text(xi, yi, str(pid), fontsize=18, color='b')  
             self.canvas.draw()
+        except Exception as e:
+            self.log_message(f"Fail to plot trajectories as error {str(e)}","INFO")
 
     def export_csv(self):
         if hasattr(self, 'trajectories'):
@@ -744,7 +754,39 @@ class MSDTab(QWidget):
             self.log_area.append(message)  # 追加日志信息
             self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum()) 
 
+    def provide_value(self):
+        try:
+            mpp = float(self.micron_per_pixel_input.text())
+            fps = float(self.fps_input.text())
+            swindow=int(self.smoothwindow_input.text())
+            if_drift=self.drift_input.isChecked()
+            filter_stubs=min(0,int(self.filtersubs_input.text()))
+            errorthreahold=float(self.errorthreahold_input.text())
+            return 0
+        except:
+            self.egg()
+            self.micron_per_pixel_input.setText(f"1.0")
+            self.fps_input.setText(f"1.0")
+            self.smoothwindow_input.setText(f"100")
+            self.drift_input.setChecked(False)
+            self.filtersubs_input.setText(f"0")
+            self.errorthreahold_input.setText(f"0.1")
+            self.log_message("Error! Invalid input Value!")
+            return 1
+
+    def egg(self):
+        t=self.micron_per_pixel_input.text()
+        if t=="About":
+            QMessageBox.about(self, "About", "This is an application designed for particle tracking and Mean Squared Displacement (MSD) calculation to determine the diffusion coefficient. It is used for the teaching of 'Measurement of Avogadro's constant via diffusion coefficient' in the course of '物理实验(下)' of Fudan University.\nAuthor: xyc\nEmail:22307110070@m.fudan.edu.cn\nDate:2025-2-4")
+        elif t=="Author":
+            QMessageBox.about(self, "Author", "Author: xyc\nEmail:22307110070@m.fudan.edu.cn")
+        
+
+
+
     def calculate_msd(self):
+        if not self.provide_value():
+            return
         self.log_message("Calculating MSD...","INFO")
     # 在后台运行 batch
         self.future = self.executor.submit(self._calculate_msd)
@@ -858,7 +900,7 @@ class MSDTab(QWidget):
 
             ###export msd
             self.msd=em.copy()
-            self.msd['Relative Error'] = errors 
+            self.msd['Relative Error'] = 1/np.sqrt(em["N"])
         except Exception as e:
             self.log_message(f"Fail to calculate MSD as error:{str(e)}","INFO")
 
