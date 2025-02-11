@@ -20,6 +20,7 @@ import trackpy as tp
 from scipy.optimize import curve_fit
 import sys
 import cv2
+import re
 import trackpy as tp
 import pandas as pd
 import numpy as np
@@ -291,6 +292,7 @@ class TrajectoryTab(QWidget):
 
 
 
+
     def load_imagesequence(self):
         # 弹出文件夹选择对话框
         imagefolder = QFileDialog.getExistingDirectory(self, "Open Image Sequence", "")
@@ -300,9 +302,17 @@ class TrajectoryTab(QWidget):
             # 获取文件夹中的所有文件
             files = os.listdir(imagefolder)
             # 过滤出支持的图片文件（支持.jpg和.bmp格式）
-            image_files = [f for f in files if f.endswith('.jpg') or f.endswith('.bmp')]
-            # 按文件名中的数字排序
-            image_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))))
+            image_files = [f for f in files if f.endswith('.jpg') or f.endswith('.bmp') or f.endswith('.tif') or f.endswith('.png')]
+            
+            # 按文件名中的数字部分排序
+            def extract_numbers(filename):
+                # 使用正则表达式提取文件名中的所有数字部分
+                numbers = re.findall(r'\d+', filename)
+                # 将数字部分转换为整数元组
+                return tuple(map(int, numbers))
+            
+            image_files.sort(key=extract_numbers)
+            print(image_files)
             
             # 初始化一个空列表，用于存储图片数组
             image_sequence = []
@@ -338,30 +348,29 @@ class TrajectoryTab(QWidget):
 
             # 关闭进度条
             progress_dialog.close()
-            self.file_path=image_path
-            bg=15
-            if len(imagefolder)>bg:
-                self.img_label.setText("Selected path:..."+imagefolder[-bg::])
+            self.file_path = imagefolder
+            bg = 15
+            if len(imagefolder) > bg:
+                self.img_label.setText("Selected path:..." + imagefolder[-bg::])
             else:
-                self.img_label.setText("Selected path:"+imagefolder)
+                self.img_label.setText("Selected path:" + imagefolder)
             global GlobalFrameSource
-            GlobalFrameSource=self.file_path[bg:-1:]
+            GlobalFrameSource = self.file_path[bg:-1:]
             # 如果成功加载图片，更新 framelist
             self.framelist = np.array(image_sequence)
-            self.has_tracked=False
+            self.has_tracked = False
             
-            self.is_video=False
-            self.if_load_frame=True
-            self.nframes=len(self.framelist)
-            self.frame_slider.setMaximum(self.nframes-1)
-            step=min(max(self.nframes//1000,1),10)
-            self.log_message(f"step:{step}","DEBUGGER")
+            self.is_video = False
+            self.if_load_frame = True
+            self.nframes = len(self.framelist)
+            self.frame_slider.setMaximum(self.nframes - 1)
+            step = min(max(self.nframes // 1000, 1), 10)
+            self.log_message(f"step:{step}", "DEBUGGER")
             self.frame_slider.setSingleStep(step)
-            if self.nframes>2000:
+            if self.nframes > 2000:
                 self.frame_slider.setTickInterval(step)
-            self.log_message(f"Loaded image sequence from: {imagefolder},Total frames: {self.nframes}", "INFO")
+            self.log_message(f"Loaded image sequence from: {imagefolder}, Total frames: {self.nframes}", "INFO")
             self.update_frame()
-
 
         except Exception as e:
             # 如果加载过程中出错，记录日志
@@ -529,10 +538,9 @@ class TrajectoryTab(QWidget):
             # 执行粒子跟踪
             t = tp.batch(self.framelist, radius, invert=invert, minmass=minmass, separation=separation,processes="auto")
             self.trajectories=tp.link(t,search_range=searchrange, memory=memory)
-            # 关闭加载弹窗
+            logging.info("Tracking process finished")
             self.plot_trajectories()
             GlobalTrajectory=self.trajectories
-            logging.info("Tracking process finished")
             self.log_message("Tracking process finished")
             self.has_tracked=True
         except Exception as e:
@@ -657,11 +665,6 @@ class MSDTab(QWidget):
         left_layout.addWidget(self.export_button)
 
         #日志显示区
-        # self.log_area = QTextEdit()
-        # self.log_area.setReadOnly(True)  # 设置为只读
-        # self.log_area.setMaximumHeight(100)  # 设置日志显示区的高度
-        # left_layout.addWidget(QLabel("Log:"))
-        # left_layout.addWidget(self.log_area)
         self.log_label = QLabel("Log:")
         left_layout.addWidget(self.log_label)
         self.log_area = QTextEdit()
@@ -762,30 +765,26 @@ class MSDTab(QWidget):
             if_drift=self.drift_input.isChecked()
             filter_stubs=min(0,int(self.filtersubs_input.text()))
             errorthreahold=float(self.errorthreahold_input.text())
-            return 0
+            return True
         except:
-            self.egg()
             self.micron_per_pixel_input.setText(f"1.0")
             self.fps_input.setText(f"1.0")
             self.smoothwindow_input.setText(f"100")
             self.drift_input.setChecked(False)
             self.filtersubs_input.setText(f"0")
             self.errorthreahold_input.setText(f"0.1")
-            self.log_message("Error! Invalid input Value!")
-            return 1
+            self.log_message("Error! Invalid input Value! Set to default value.")
+            return False
 
-    def egg(self):
-        t=self.micron_per_pixel_input.text()
-        if t=="About":
-            QMessageBox.about(self, "About", "This is an application designed for particle tracking and Mean Squared Displacement (MSD) calculation to determine the diffusion coefficient. It is used for the teaching of 'Measurement of Avogadro's constant via diffusion coefficient' in the course of '物理实验(下)' of Fudan University.\nAuthor: xyc\nEmail:22307110070@m.fudan.edu.cn\nDate:2025-2-4")
-        elif t=="Author":
-            QMessageBox.about(self, "Author", "Author: xyc\nEmail:22307110070@m.fudan.edu.cn")
         
 
 
 
     def calculate_msd(self):
         if not self.provide_value():
+            return
+        if not hasattr(self, 'trajectories'):
+            self.log_message("empty trajectories")
             return
         self.log_message("Calculating MSD...","INFO")
     # 在后台运行 batch
@@ -797,9 +796,7 @@ class MSDTab(QWidget):
         #漂移的去头尾smooth
         #错误处理
         #修饰图注增加标题 
-        if not hasattr(self, 'trajectories'):
-            self.log_message("empty trajectories")
-            return
+        #增加线性拟合
         try:
             mpp = float(self.micron_per_pixel_input.text())
             fps = float(self.fps_input.text())
@@ -827,7 +824,7 @@ class MSDTab(QWidget):
             ax2.plot(d.index,d["x"]*mpp,label="x")
             ax2.plot(d.index,d["y"]*mpp,label="y")
             ax2.set_xlabel('Frame')
-            ax2.set_ylabel('Mean Drift')
+            ax2.set_ylabel('Mean Drift/px')
             ax2.set_title('Mean Drift of x,y')
             ax2.legend()
             ax3 = self.figure.add_subplot(223)
