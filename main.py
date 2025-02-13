@@ -128,8 +128,8 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.trajectory_tab = TrajectoryTab()
         self.msd_tab = MSDTab()
-        self.tabs.addTab(self.trajectory_tab, "轨迹识别")
-        self.tabs.addTab(self.msd_tab, "轨迹处理")
+        self.tabs.addTab(self.trajectory_tab, "Particle Tracking")
+        self.tabs.addTab(self.msd_tab, "Trajectory Analysis")
 
         self.setCentralWidget(self.tabs)
 
@@ -312,7 +312,7 @@ class TrajectoryTab(QWidget):
                 return tuple(map(int, numbers))
             
             image_files.sort(key=extract_numbers)
-            print(image_files)
+            # print(image_files)
             
             # 初始化一个空列表，用于存储图片数组
             image_sequence = []
@@ -502,6 +502,10 @@ class TrajectoryTab(QWidget):
 
     def track_particles(self):
         """启动 batch 处理"""
+        #FIXME:
+        #有时(经常)会在控制台出现报错:QObject::connect: Cannot queue arguments of type 'QTextCursor'
+        #(Make sure 'QTextCursor' is registered using qRegisterMetaType().)
+        #原因未知，不影响程序运行
         if not self.if_load_frame:
             self.log_message("No frame loaded","INFO")
             return
@@ -794,8 +798,6 @@ class MSDTab(QWidget):
     def _calculate_msd(self):
         #TODO:
         #漂移的去头尾smooth
-        #错误处理
-        #修饰图注增加标题 
         #增加线性拟合
         try:
             mpp = float(self.micron_per_pixel_input.text())
