@@ -259,7 +259,29 @@ class TrajectoryTab(QWidget):
             minmass = int(self.minmass_input.text())
             separation = int(self.separation_input.text())
             m=int(self.memory_input.text())
-            sr=int(self.searchrange_input.text())
+            searchrange=int(self.searchrange_input.text())
+
+            if m<0:
+                self.log_message("Error! Memory should be positive integer.","INFO")
+                self.memory_input.setText(f"0")
+                return True
+            if separation<0:
+                self.log_message("Error! Separation should be positive.","INFO")
+                self.separation_input.setText(f"10")
+                return True
+            if minmass<0:
+                self.log_message("Error! Minmass should be positive integer.","INFO")
+                self.minmass_input.setText(f"10")
+                return True
+            if searchrange<0:
+                self.log_message("Error! Searchrange should be positive integer.","INFO")
+                self.searchrange_input.setText(f"0")
+                return True
+            if radius<0:
+                self.log_message("Error! Diameter should be positive.","INFO")
+                self.diameter_input.setText(f"10")
+                return True
+            return False
         except:
             self.log_message("Error! Invalid input Value!")
             self.separation_input.setText(f"10")
@@ -267,6 +289,7 @@ class TrajectoryTab(QWidget):
             self.diameter_input.setText(f"10")
             self.searchrange_input.setText(f"20")
             self.memory_input.setText(f"0")
+            return True
 
         
             
@@ -480,7 +503,8 @@ class TrajectoryTab(QWidget):
         if not self.if_load_frame:
             self.log_message("No frame loaded","INFO")
             return
-        self.provide_value()
+        if self.provide_value():
+            return
         try:
             radius = get_radius(float(self.diameter_input.text()))
             invert = self.invert_input.isChecked()
@@ -509,6 +533,8 @@ class TrajectoryTab(QWidget):
         if not self.if_load_frame:
             self.log_message("No frame loaded","INFO")
             return
+        if self.provide_value():
+            return
 
         # 创建弹窗
         self.progress_dialog = BatchProgressDialog(self)
@@ -529,7 +555,6 @@ class TrajectoryTab(QWidget):
 
 
     def _track_particles(self):
-        self.provide_value()
         global GlobalTrajectory
         try:
             radius = get_radius(float(self.diameter_input.text()))
@@ -647,7 +672,7 @@ class MSDTab(QWidget):
         self.fps_input = QLineEdit("1.0")
         self.filtersubs_input = QLineEdit("0")
         self.drift_input = QCheckBox("")
-        self.smoothwindow_input = QLineEdit("100")
+        self.smoothwindow_input = QLineEdit("101")
         self.errorthreahold_input = QLineEdit("0.1")
 
         form_layout.addRow("Micron per Pixel:", self.micron_per_pixel_input)
@@ -766,26 +791,29 @@ class MSDTab(QWidget):
             mpp = float(self.micron_per_pixel_input.text())
             fps = float(self.fps_input.text())
             swindow=int(self.smoothwindow_input.text())
+            if swindow<0:
+                self.log_message("Warning!Smooth window should be positive integer.Set to 0.","INFO")
+                self.smoothwindow_input.setText(f"0")
             if_drift=self.drift_input.isChecked()
             filter_stubs=min(0,int(self.filtersubs_input.text()))
             errorthreahold=float(self.errorthreahold_input.text())
-            return True
+            return False
         except:
             self.micron_per_pixel_input.setText(f"1.0")
             self.fps_input.setText(f"1.0")
-            self.smoothwindow_input.setText(f"100")
+            self.smoothwindow_input.setText(f"101")
             self.drift_input.setChecked(False)
             self.filtersubs_input.setText(f"0")
             self.errorthreahold_input.setText(f"0.1")
             self.log_message("Error! Invalid input Value! Set to default value.")
-            return False
+            return True
 
         
 
 
 
     def calculate_msd(self):
-        if not self.provide_value():
+        if self.provide_value():
             return
         if not hasattr(self, 'trajectories'):
             self.log_message("empty trajectories")
@@ -809,7 +837,11 @@ class MSDTab(QWidget):
 
             t1 = tp.filter_stubs(self.trajectories,filter_stubs)
 
-            d = tp.compute_drift(t1,smoothing=swindow)
+            d0 = tp.compute_drift(t1)
+            if swindow>0:
+                d=d0.rolling(swindow,center=True,min_periods=0).mean()
+            else:
+                d=d0
 
             if if_drift:
                 tm = tp.subtract_drift(t1.copy(), d)
